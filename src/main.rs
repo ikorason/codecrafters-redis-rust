@@ -16,8 +16,9 @@ fn main() {
 }
 
 fn handle_connection(mut stream: TcpStream) {
+    let mut buffer = [0; 512];
+
     loop {
-        let mut buffer = [0; 512];
         let bytes_read = stream
             .read(&mut buffer)
             .expect("Failed to read from stream");
