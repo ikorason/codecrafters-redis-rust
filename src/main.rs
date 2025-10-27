@@ -104,14 +104,21 @@ fn handle_connection_event(connection: &mut TcpStream) -> bool {
             }
             Ok(n) => {
                 if let Some(parts) = parse_resp_array(&buffer[..n]) {
+                    eprintln!("Parsed: {:?}", parts);
                     if parts.len() >= 2 && parts[0].to_uppercase() == "ECHO" {
-                        let response = &parts[1].as_bytes();
-
-                        if let Err(e) = connection.write_all(response) {
+                        let message = &parts[1];
+                        let response = format!("${}\r\n{}\r\n", message.len(), message);
+                        eprintln!("Sending: {:?}", response);
+                        eprintln!("Bytes: {:?}", response.as_bytes());
+                        if let Err(e) = connection.write_all(response.as_bytes()) {
                             eprintln!("Failed to send response: {}", e);
                             return true;
                         }
+                        eprintln!("Write succeeded!");
+                        break; // ADD THIS - exit the loop after responding
                     }
+                } else {
+                    eprintln!("Parse failed!");
                 }
             }
             Err(ref err) if would_block(err) => {
