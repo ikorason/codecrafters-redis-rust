@@ -105,7 +105,15 @@ fn handle_connection_event(connection: &mut TcpStream) -> bool {
             Ok(n) => {
                 if let Some(parts) = parse_resp_array(&buffer[..n]) {
                     eprintln!("Parsed: {:?}", parts);
-                    if parts.len() >= 2 && parts[0].to_uppercase() == "ECHO" {
+
+                    if parts.len() >= 1 && parts[0].to_uppercase() == "PING" {
+                        let response = "+PONG\r\n";
+                        if let Err(e) = connection.write_all(response.as_bytes()) {
+                            eprintln!("Failed to send response: {}", e);
+                            return true;
+                        }
+                        break;
+                    } else if parts.len() >= 2 && parts[0].to_uppercase() == "ECHO" {
                         let message = &parts[1];
                         let response = format!("${}\r\n{}\r\n", message.len(), message);
                         eprintln!("Sending: {:?}", response);
@@ -115,7 +123,7 @@ fn handle_connection_event(connection: &mut TcpStream) -> bool {
                             return true;
                         }
                         eprintln!("Write succeeded!");
-                        break; // ADD THIS - exit the loop after responding
+                        break;
                     }
                 } else {
                     eprintln!("Parse failed!");
