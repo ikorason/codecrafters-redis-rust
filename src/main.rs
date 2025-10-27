@@ -9,7 +9,6 @@ use mio::{
 };
 
 const SERVER: Token = Token(0);
-const RESPONSE: &[u8; 7] = b"+PONG\r\n";
 
 fn main() {
     // Create a poll instance
@@ -104,18 +103,15 @@ fn handle_connection_event(connection: &mut TcpStream) -> bool {
                 return true;
             }
             Ok(n) => {
-                let request = String::from_utf8_lossy(&buffer[..n]);
-                let request = request.trim();
+                if let Some(parts) = parse_resp_array(&buffer[..n]) {
+                    if parts.len() >= 2 && parts[0].to_uppercase() == "ECHO" {
+                        let response = &parts[1].as_bytes();
 
-                let response = if let Some(message) = request.strip_prefix("ECHO ") {
-                    message.as_bytes()
-                } else {
-                    RESPONSE
-                };
-
-                if let Err(e) = connection.write_all(response) {
-                    eprintln!("Failed to send response: {}", e);
-                    return true;
+                        if let Err(e) = connection.write_all(response) {
+                            eprintln!("Failed to send response: {}", e);
+                            return true;
+                        }
+                    }
                 }
             }
             Err(ref err) if would_block(err) => {
@@ -130,4 +126,32 @@ fn handle_connection_event(connection: &mut TcpStream) -> bool {
     }
 
     false
+}
+
+fn parse_resp_array(buffer: &[u8]) -> Option<Vec<String>> {
+    let data = String::from_utf8_lossy(buffer);
+    let mut lines = data.split("\r\n");
+
+    // First line should be *N (array length)
+    let array_line = lines.next()?;
+    if !array_line.starts_with('*') {
+        return None;
+    }
+
+    let count: usize = array_line[1..].parse().ok()?;
+    let mut result = Vec::new();
+
+    for _ in 0..count {
+        // Read bulk string: $length\r\n
+        let length_line = lines.next()?;
+        if !length_line.starts_with('$') {
+            return None;
+        }
+
+        // Read the actual content
+        let content = lines.next()?;
+        result.push(content.to_string());
+    }
+
+    Some(result)
 }
