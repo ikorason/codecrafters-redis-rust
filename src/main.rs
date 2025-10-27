@@ -104,10 +104,16 @@ fn handle_connection_event(connection: &mut TcpStream) -> bool {
                 return true;
             }
             Ok(n) => {
-                // Got some data, send PONG response
-                println!("Received {} bytes", n);
+                let request = String::from_utf8_lossy(&buffer[..n]);
+                let request = request.trim();
 
-                if let Err(e) = connection.write_all(RESPONSE) {
+                let response = if let Some(message) = request.strip_prefix("ECHO ") {
+                    message.as_bytes()
+                } else {
+                    RESPONSE
+                };
+
+                if let Err(e) = connection.write_all(response) {
                     eprintln!("Failed to send response: {}", e);
                     return true;
                 }
