@@ -4,8 +4,9 @@ use std::rc::Rc;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::time::Instant;
 
-type Storage = Rc<RefCell<HashMap<String, String>>>;
+type Storage = Rc<RefCell<HashMap<String, (String, Option<Instant>)>>>;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::io::Result<()> {
@@ -59,13 +60,42 @@ async fn handle_connection(mut stream: TcpStream, storage: Storage) -> std::io::
                 "SET" if parts.len() >= 3 => {
                     let key = parts[1].clone();
                     let value = parts[2].clone();
-                    storage.borrow_mut().insert(key, value);
+
+                    // Check for PX option
+                    let expiry = if parts.len() >= 5 && parts[3].to_uppercase() == "PX" {
+                        if let Ok(ms) = parts[4].parse::<u64>() {
+                            Some(Instant::now() + tokio::time::Duration::from_millis(ms))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    storage.borrow_mut().insert(key, (value, expiry));
                     "+OK\r\n".to_string()
                 }
                 "GET" if parts.len() >= 2 => {
                     let key = &parts[1];
-                    match storage.borrow().get(key) {
-                        Some(value) => format!("${}\r\n{}\r\n", value.len(), value),
+                    let mut store = storage.borrow_mut();
+
+                    match store.get(key) {
+                        Some((value, expiry)) => {
+                            // Check if key has expired
+                            if let Some(exp_time) = expiry {
+                                if Instant::now() > *exp_time {
+                                    // Key expired, remove it
+                                    store.remove(key);
+                                    "$-1\r\n".to_string()
+                                } else {
+                                    // Key still valid
+                                    format!("${}\r\n{}\r\n", value.len(), value)
+                                }
+                            } else {
+                                // No expiry
+                                format!("${}\r\n{}\r\n", value.len(), value)
+                            }
+                        }
                         None => "$-1\r\n".to_string(),
                     }
                 }
