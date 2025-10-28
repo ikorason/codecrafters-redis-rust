@@ -1,146 +1,85 @@
-use std::{
-    collections::HashMap,
-    io::{Read, Write},
-};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 
-use mio::{
-    net::{TcpListener, TcpStream},
-    Events, Interest, Poll, Token,
-};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 
-const SERVER: Token = Token(0);
+type Storage = Rc<RefCell<HashMap<String, String>>>;
 
-fn main() {
-    // Create a poll instance
-    let mut poll = Poll::new().unwrap();
-    let mut events = Events::with_capacity(128);
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> std::io::Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:6379").await?;
+    println!("Server listening on 127.0.0.1:6379");
 
-    // Setup the TCP listener
-    let addr = "127.0.0.1:6379".parse().unwrap();
-    let mut listener = TcpListener::bind(addr).unwrap();
+    let storage = Rc::new(RefCell::new(HashMap::new()));
 
-    // Register the listener with the poll instance
-    poll.registry()
-        .register(&mut listener, SERVER, Interest::READABLE)
-        .unwrap();
+    let local = tokio::task::LocalSet::new();
 
-    println!("Redis clone listening on 127.0.0.1:6379");
-
-    // Map to store client connections
-    let mut connections: HashMap<Token, TcpStream> = HashMap::new();
-    let mut unique_token = Token(1);
-
-    // Event loop
-    loop {
-        // Poll for events
-        poll.poll(&mut events, None).unwrap();
-
-        for event in events.iter() {
-            match event.token() {
-                SERVER => {
-                    // Accept new connections
-                    loop {
-                        match listener.accept() {
-                            Ok((mut connection, address)) => {
-                                println!("Accepted connection from: {}", address);
-
-                                let token = next_token(&mut unique_token);
-
-                                // Register the new connection
-                                poll.registry()
-                                    .register(&mut connection, token, Interest::READABLE)
-                                    .unwrap();
-
-                                connections.insert(token, connection);
-                            }
-                            Err(ref err) if would_block(err) => break,
-                            Err(err) => {
-                                eprintln!("Error accepting connection: {}", err);
-                                break;
-                            }
-                        }
+    local
+        .run_until(async move {
+            loop {
+                let (stream, _addr) = listener.accept().await.unwrap();
+                let storage_clone = Rc::clone(&storage);
+                tokio::task::spawn_local(async move {
+                    if let Err(e) = handle_connection(stream, storage_clone).await {
+                        eprintln!("Error handling connection: {}", e);
                     }
-                }
-                token => {
-                    // Handle client connection
-                    let done = if let Some(connection) = connections.get_mut(&token) {
-                        handle_connection_event(connection)
-                    } else {
-                        false
-                    };
-
-                    if done {
-                        // Client disconnected, remove from map
-                        if let Some(mut connection) = connections.remove(&token) {
-                            poll.registry().deregister(&mut connection).unwrap();
-                            println!("Client disconnected: {:?}", token);
-                        }
-                    }
-                }
+                });
             }
+        })
+        .await;
+
+    Ok(())
+}
+
+async fn handle_connection(mut stream: TcpStream, storage: Storage) -> std::io::Result<()> {
+    let mut buffer = [0; 512];
+
+    loop {
+        // Read data from the stream
+        let n = stream.read(&mut buffer).await?;
+
+        // Connection closed
+        if n == 0 {
+            break;
         }
-    }
-}
 
-fn next_token(current: &mut Token) -> Token {
-    let next = current.0;
-    current.0 += 1;
-    Token(next)
-}
-
-fn would_block(err: &std::io::Error) -> bool {
-    err.kind() == std::io::ErrorKind::WouldBlock
-}
-
-fn handle_connection_event(connection: &mut TcpStream) -> bool {
-    let mut buffer = [0u8; 512];
-
-    // Try to read from the connection
-    loop {
-        match connection.read(&mut buffer) {
-            Ok(0) => {
-                // Connection closed by client
-                return true;
+        // Parse the buffer (only the bytes that were read)
+        if let Some(parts) = parse_resp_array(&buffer[..n]) {
+            if parts.is_empty() {
+                continue;
             }
-            Ok(n) => {
-                if let Some(parts) = parse_resp_array(&buffer[..n]) {
-                    eprintln!("Parsed: {:?}", parts);
 
-                    if parts.len() >= 1 && parts[0].to_uppercase() == "PING" {
-                        let response = "+PONG\r\n";
-                        if let Err(e) = connection.write_all(response.as_bytes()) {
-                            eprintln!("Failed to send response: {}", e);
-                            return true;
-                        }
-                        break;
-                    } else if parts.len() >= 2 && parts[0].to_uppercase() == "ECHO" {
-                        let message = &parts[1];
-                        let response = format!("${}\r\n{}\r\n", message.len(), message);
-                        eprintln!("Sending: {:?}", response);
-                        eprintln!("Bytes: {:?}", response.as_bytes());
-                        if let Err(e) = connection.write_all(response.as_bytes()) {
-                            eprintln!("Failed to send response: {}", e);
-                            return true;
-                        }
-                        eprintln!("Write succeeded!");
-                        break;
-                    }
-                } else {
-                    eprintln!("Parse failed!");
+            let response = match parts[0].to_uppercase().as_str() {
+                "PING" => "+PONG\r\n".to_string(),
+                "ECHO" if parts.len() >= 2 => {
+                    format!("${}\r\n{}\r\n", parts[1].len(), parts[1])
                 }
-            }
-            Err(ref err) if would_block(err) => {
-                // No more data available right now
-                break;
-            }
-            Err(err) => {
-                eprintln!("Error reading from connection: {}", err);
-                return true;
-            }
+                "SET" if parts.len() >= 3 => {
+                    let key = parts[1].clone();
+                    let value = parts[2].clone();
+                    storage.borrow_mut().insert(key, value);
+                    "+OK\r\n".to_string()
+                }
+                "GET" if parts.len() >= 2 => {
+                    let key = &parts[1];
+                    match storage.borrow().get(key) {
+                        Some(value) => format!("${}\r\n{}\r\n", value.len(), value),
+                        None => "$-1\r\n".to_string(),
+                    }
+                }
+                _ => {
+                    eprintln!("Unknown command or insufficient arguments");
+                    continue;
+                }
+            };
+
+            stream.write_all(response.as_bytes()).await?;
         }
     }
 
-    false
+    Ok(())
 }
 
 fn parse_resp_array(buffer: &[u8]) -> Option<Vec<String>> {
