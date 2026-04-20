@@ -14,7 +14,8 @@ enum RedisValue {
 type Storage = Rc<RefCell<HashMap<String, (RedisValue, Option<Instant>)>>>;
 
 const NULL_BULK: &str = "$-1\r\n";
-const WRONG_TYPE_ERR: &str = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+const WRONG_TYPE_ERR: &str =
+    "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
 
 fn bulk_string(s: &str) -> String {
     format!("${}\r\n{}\r\n", s.len(), s)
@@ -117,7 +118,6 @@ async fn handle_connection(mut stream: TcpStream, storage: Storage) -> std::io::
                 }
                 "RPUSH" if parts.len() >= 3 => {
                     let key = parts[1].clone();
-                    let element = parts[2].clone();
 
                     let mut store = storage.borrow_mut();
                     let entry = store
@@ -125,7 +125,9 @@ async fn handle_connection(mut stream: TcpStream, storage: Storage) -> std::io::
                         .or_insert((RedisValue::List(Vec::new()), None));
 
                     if let RedisValue::List(vec) = &mut entry.0 {
-                        vec.push(element);
+                        for el in &parts[2..] {
+                            vec.push(el.clone())
+                        }
                         format!(":{}\r\n", vec.len())
                     } else {
                         WRONG_TYPE_ERR.to_string()
