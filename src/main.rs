@@ -13,6 +13,13 @@ enum RedisValue {
 
 type Storage = Rc<RefCell<HashMap<String, (RedisValue, Option<Instant>)>>>;
 
+const NULL_BULK: &str = "$-1\r\n";
+const WRONG_TYPE_ERR: &str = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+
+fn bulk_string(s: &str) -> String {
+    format!("${}\r\n{}\r\n", s.len(), s)
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::io::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:6379").await?;
@@ -59,9 +66,7 @@ async fn handle_connection(mut stream: TcpStream, storage: Storage) -> std::io::
 
             let response = match parts[0].to_uppercase().as_str() {
                 "PING" => "+PONG\r\n".to_string(),
-                "ECHO" if parts.len() >= 2 => {
-                    format!("${}\r\n{}\r\n", parts[1].len(), parts[1])
-                }
+                "ECHO" if parts.len() >= 2 => bulk_string(&parts[1]),
                 "SET" if parts.len() >= 3 => {
                     let key = parts[1].clone();
                     let value = parts[2].clone();
@@ -94,20 +99,20 @@ async fn handle_connection(mut stream: TcpStream, storage: Storage) -> std::io::
                                     if Instant::now() > *exp_time {
                                         // Key expired, remove it
                                         store.remove(key);
-                                        "$-1\r\n".to_string()
+                                        NULL_BULK.to_string()
                                     } else {
                                         // Key still valid
-                                        format!("${}\r\n{}\r\n", s.len(), s)
+                                        bulk_string(s)
                                     }
                                 } else {
                                     // No expiry
-                                    format!("${}\r\n{}\r\n", s.len(), s)
+                                    bulk_string(s)
                                 }
                             } else {
-                                todo!()
+                                WRONG_TYPE_ERR.to_string()
                             }
                         }
-                        None => "$-1\r\n".to_string(),
+                        None => NULL_BULK.to_string(),
                     }
                 }
                 "RPUSH" if parts.len() >= 3 => {
@@ -115,7 +120,6 @@ async fn handle_connection(mut stream: TcpStream, storage: Storage) -> std::io::
                     let element = parts[2].clone();
 
                     let mut store = storage.borrow_mut();
-
                     let entry = store
                         .entry(key)
                         .or_insert((RedisValue::List(Vec::new()), None));
@@ -124,7 +128,7 @@ async fn handle_connection(mut stream: TcpStream, storage: Storage) -> std::io::
                         vec.push(element);
                         format!(":{}\r\n", vec.len())
                     } else {
-                        "-ERR wrong type\r\n".to_string()
+                        WRONG_TYPE_ERR.to_string()
                     }
                 }
                 _ => {
