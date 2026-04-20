@@ -6,7 +6,12 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::Instant;
 
-type Storage = Rc<RefCell<HashMap<String, (String, Option<Instant>)>>>;
+enum RedisValue {
+    Str(String),
+    List(Vec<String>),
+}
+
+type Storage = Rc<RefCell<HashMap<String, (RedisValue, Option<Instant>)>>>;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::io::Result<()> {
@@ -72,7 +77,9 @@ async fn handle_connection(mut stream: TcpStream, storage: Storage) -> std::io::
                         None
                     };
 
-                    storage.borrow_mut().insert(key, (value, expiry));
+                    storage
+                        .borrow_mut()
+                        .insert(key, (RedisValue::Str(value), expiry));
                     "+OK\r\n".to_string()
                 }
                 "GET" if parts.len() >= 2 => {
@@ -81,22 +88,43 @@ async fn handle_connection(mut stream: TcpStream, storage: Storage) -> std::io::
 
                     match store.get(key) {
                         Some((value, expiry)) => {
-                            // Check if key has expired
-                            if let Some(exp_time) = expiry {
-                                if Instant::now() > *exp_time {
-                                    // Key expired, remove it
-                                    store.remove(key);
-                                    "$-1\r\n".to_string()
+                            if let RedisValue::Str(s) = value {
+                                // Check if key has expired
+                                if let Some(exp_time) = expiry {
+                                    if Instant::now() > *exp_time {
+                                        // Key expired, remove it
+                                        store.remove(key);
+                                        "$-1\r\n".to_string()
+                                    } else {
+                                        // Key still valid
+                                        format!("${}\r\n{}\r\n", s.len(), s)
+                                    }
                                 } else {
-                                    // Key still valid
-                                    format!("${}\r\n{}\r\n", value.len(), value)
+                                    // No expiry
+                                    format!("${}\r\n{}\r\n", s.len(), s)
                                 }
                             } else {
-                                // No expiry
-                                format!("${}\r\n{}\r\n", value.len(), value)
+                                todo!()
                             }
                         }
                         None => "$-1\r\n".to_string(),
+                    }
+                }
+                "RPUSH" if parts.len() >= 3 => {
+                    let key = parts[1].clone();
+                    let element = parts[2].clone();
+
+                    let mut store = storage.borrow_mut();
+
+                    let entry = store
+                        .entry(key)
+                        .or_insert((RedisValue::List(Vec::new()), None));
+
+                    if let RedisValue::List(vec) = &mut entry.0 {
+                        vec.push(element);
+                        format!(":{}\r\n", vec.len())
+                    } else {
+                        "-ERR wrong type\r\n".to_string()
                     }
                 }
                 _ => {
