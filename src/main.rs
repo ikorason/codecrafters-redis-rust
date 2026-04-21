@@ -133,6 +133,24 @@ async fn handle_connection(mut stream: TcpStream, storage: Storage) -> std::io::
                         WRONG_TYPE_ERR.to_string()
                     }
                 }
+                "LRANGE" if parts.len() >= 4 => {
+                    let key = parts[1].clone();
+                    let start: i64 = parts[2].parse().unwrap_or(0);
+                    let stop: i64 = parts[3].parse().unwrap_or(0);
+
+                    let store = storage.borrow_mut();
+                    let store_key = store.get(&key);
+
+                    if let Some((RedisValue::List(vec), _)) = store_key {
+                        let mut response = format!("*{}\r\n", stop - start + 1);
+                        for el in &vec[(start as usize)..=(stop as usize)] {
+                            response.push_str(&bulk_string(el));
+                        }
+                        response
+                    } else {
+                        "*0\r\n".to_string()
+                    }
+                }
                 _ => {
                     eprintln!("Unknown command or insufficient arguments");
                     continue;
