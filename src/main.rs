@@ -143,7 +143,9 @@ async fn handle_connection(mut stream: TcpStream, storage: Storage) -> std::io::
 
                     if let Some((RedisValue::List(vec), _)) = store_key {
                         let mut response = format!("*{}\r\n", stop - start + 1);
-                        for el in &vec[(start as usize)..=(stop as usize)] {
+                        for el in
+                            &vec[(start as usize)..=(stop.min((vec.len() as i64) - 1) as usize)]
+                        {
                             response.push_str(&bulk_string(el));
                         }
                         response
