@@ -21,6 +21,14 @@ fn bulk_string(s: &str) -> String {
     format!("${}\r\n{}\r\n", s.len(), s)
 }
 
+fn resolve_index(idx: i64, len: usize) -> usize {
+    if idx < 0 {
+        (len as i64 + idx).max(0) as usize
+    } else {
+        idx as usize
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::io::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:6379").await?;
@@ -142,9 +150,10 @@ async fn handle_connection(mut stream: TcpStream, storage: Storage) -> std::io::
                     let store_key = store.get(&key);
 
                     if let Some((RedisValue::List(vec), _)) = store_key {
-                        let stop = stop.min((vec.len() as i64) - 1);
+                        let start = resolve_index(start, vec.len());
+                        let stop = resolve_index(stop, vec.len()).min(vec.len() - 1);
                         let mut response = format!("*{}\r\n", stop - start + 1);
-                        for el in &vec[(start as usize)..=(stop as usize)] {
+                        for el in &vec[start..=stop] {
                             response.push_str(&bulk_string(el));
                         }
                         response
