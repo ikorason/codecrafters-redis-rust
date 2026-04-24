@@ -161,6 +161,23 @@ async fn handle_connection(mut stream: TcpStream, storage: Storage) -> std::io::
                         "*0\r\n".to_string()
                     }
                 }
+                "LPUSH" if parts.len() >= 3 => {
+                    let key = parts[1].clone();
+
+                    let mut store = storage.borrow_mut();
+                    let entry = store
+                        .entry(key)
+                        .or_insert((RedisValue::List(Vec::new()), None));
+
+                    if let RedisValue::List(vec) = &mut entry.0 {
+                        for el in &parts[2..] {
+                            vec.insert(0, el.clone());
+                        }
+                        format!(":{}\r\n", vec.len())
+                    } else {
+                        WRONG_TYPE_ERR.to_string()
+                    }
+                }
                 _ => {
                     eprintln!("Unknown command or insufficient arguments");
                     continue;
