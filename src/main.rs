@@ -178,6 +178,18 @@ async fn handle_connection(mut stream: TcpStream, storage: Storage) -> std::io::
                         WRONG_TYPE_ERR.to_string()
                     }
                 }
+                "LLEN" => {
+                    let key = parts[1].clone();
+
+                    let store = storage.borrow_mut();
+                    let store_key = store.get(&key);
+
+                    if let Some((RedisValue::List(vec), _)) = store_key {
+                        format!(":{}\r\n", vec.len())
+                    } else {
+                        ":0\r\n".to_string()
+                    }
+                }
                 _ => {
                     eprintln!("Unknown command or insufficient arguments");
                     continue;
