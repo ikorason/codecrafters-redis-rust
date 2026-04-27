@@ -190,6 +190,19 @@ async fn handle_connection(mut stream: TcpStream, storage: Storage) -> std::io::
                         ":0\r\n".to_string()
                     }
                 }
+                "LPOP" => {
+                    let key = parts[1].clone();
+
+                    let mut store = storage.borrow_mut();
+                    let store_key = store.get_mut(&key);
+
+                    if let Some((RedisValue::List(vec), _)) = store_key {
+                        // removes and returns the first element of a list.
+                        bulk_string(&vec.remove(0))
+                    } else {
+                        NULL_BULK.to_string()
+                    }
+                }
                 _ => {
                     eprintln!("Unknown command or insufficient arguments");
                     continue;
